@@ -1,0 +1,23 @@
+{
+  "name": "queue-app",
+  "private": true,
+  "version": "1.0.0",
+  "homepage": "https://anasvanu.github.io/queue/",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
+  },
+  "dependencies": {
+    "lucide-react": "^0.542.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "vite": "^7.1.7"
+  }
+}
