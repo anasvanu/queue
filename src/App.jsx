@@ -12,6 +12,8 @@ const SK = {
   SESSION: 'mq:session',
   OTPS: 'mq:otps',
   DELAYED: 'mq:delayed',
+  NEXT_ALERTED: 'mq:next_alerted',
+  EMAIL_LOG: 'mq:email_log',
 };
 
 const sget = async (k, def = null) => {
@@ -32,6 +34,46 @@ const sset = async (k, v) => {
     }
     localStorage.setItem(k, JSON.stringify(v));
   } catch {}
+};
+
+const formatMinutes = (mins) => {
+  const rounded = Math.max(0, Math.round(mins));
+  if (rounded < 60) return `${rounded} minutes`;
+  const h = Math.floor(rounded / 60);
+  const m = rounded % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+};
+
+const getRemainingCurrentMinutes = (current) => {
+  if (!current) return 0;
+  const startedAt = current.calledAt ? new Date(current.calledAt).getTime() : Date.now();
+  const elapsed = (Date.now() - startedAt) / 60000;
+  return Math.max(0, (current.duration || 0) - elapsed);
+};
+
+const estimateWaitMinutes = (queue, current, targetIndex) => {
+  const beforeMins = queue.slice(0, targetIndex).reduce((sum, item) => sum + (item.duration || 0), 0);
+  return beforeMins + getRemainingCurrentMinutes(current);
+};
+
+const sendEmail = async ({ to, subject, body, push }) => {
+  try {
+    if (window?.email?.send) {
+      await window.email.send({ to, subject, body });
+      return true;
+    }
+    if (window?.Email?.send) {
+      await window.Email.send({ to, subject, body });
+      return true;
+    }
+  } catch {}
+
+  const outbox = await sget(SK.EMAIL_LOG, []);
+  await sset(SK.EMAIL_LOG, [...outbox, { to, subject, body, createdAt: new Date().toISOString() }]);
+  if (push) {
+    push('Email service not configured in browser. Message captured in local outbox.', 'info');
+  }
+  return false;
 };
 
 // ============ SEED DATA ============
@@ -398,7 +440,7 @@ const Brand = ({ size = 'lg' }) => (
   </div>
 );
 
-function AuthScreen({ onLogin, push }) {
+function AuthScreen({ onLogin, push, onUsersChanged }) {
   const [mode, setMode] = useState('login'); // login | signup | forgot | otp
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -425,12 +467,18 @@ function AuthScreen({ onLogin, push }) {
     onLogin(u);
   };
 
-  const sendOtp = (purpose) => {
+  const sendOtp = async (purpose) => {
     const code = String(Math.floor(100000 + Math.random() * 900000));
     setPendingOtp(code);
     setOtpFor(purpose);
     setMode('otp');
-    push(`OTP sent to ${email}: ${code} (demo)`, 'info');
+    await sendEmail({
+      to: email,
+      subject: 'Your verification code',
+      body: `Your OTP is ${code}. It expires after one use.`,
+      push,
+    });
+    push('OTP has been sent to your email.', 'success');
   };
 
   const handleSignup = async () => {
@@ -438,14 +486,14 @@ function AuthScreen({ onLogin, push }) {
     if (!isAllowedDomain(email)) return push(`Email domain not permitted. Allowed: ${domains.join(', ')}`, 'error');
     const users = await sget(SK.USERS, []);
     if (users.some(u => u.email.toLowerCase() === email.toLowerCase())) return push('Email already registered.', 'error');
-    sendOtp('signup');
+    await sendOtp('signup');
   };
 
   const handleForgot = async () => {
     if (!email) return push('Enter your email.', 'error');
     const users = await sget(SK.USERS, []);
     if (!users.some(u => u.email.toLowerCase() === email.toLowerCase())) return push('No account found.', 'error');
-    sendOtp('forgot');
+    await sendOtp('forgot');
   };
 
   const verifyOtp = async () => {
@@ -459,12 +507,20 @@ function AuthScreen({ onLogin, push }) {
         verified: true,
       };
       await sset(SK.USERS, [...users, newUser]);
+      await sendEmail({
+        to: email,
+        subject: 'Account created successfully',
+        body: `Welcome ${name}. Your account has been created and verified.`,
+        push,
+      });
+      onUsersChanged?.();
       push('Account created. Please sign in.', 'success');
       setMode('login'); setOtp(''); setPassword('');
     } else if (otpFor === 'forgot') {
       if (!newPwd) return push('Enter new password.', 'error');
       const updated = users.map(u => u.email.toLowerCase() === email.toLowerCase() ? { ...u, password: newPwd } : u);
       await sset(SK.USERS, updated);
+      onUsersChanged?.();
       push('Password reset. Please sign in.', 'success');
       setMode('login'); setOtp(''); setNewPwd(''); setPassword('');
     }
@@ -588,6 +644,7 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
   const myEntry = queue.find(q => q.userId === user.id);
   const myPosition = myEntry ? queue.indexOf(myEntry) + 1 : null;
   const inSomeForm = myCurrent || myEntry;
+  const isFirstInLine = !current && myEntry && myPosition === 1 && !moratorium?.active;
 
   const submitRequest = async () => {
     if (!topic.trim() || !purpose.trim()) return push('All fields required.', 'error');
@@ -601,26 +658,58 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
       requestedAt: new Date().toISOString(),
       delayed: false,
     };
-    await sset(SK.QUEUE, [...q, entry]);
+    const nextQueue = [...q, entry];
+    await sset(SK.QUEUE, nextQueue);
+    const position = nextQueue.length;
+    const waitMinutes = estimateWaitMinutes(nextQueue, current, position - 1);
+    await sendEmail({
+      to: user.email,
+      subject: 'Meeting request received',
+      body: `Hello ${user.name}, your request "${topic}" is confirmed. Your queue position is ${position} and the estimated wait time is ${formatMinutes(waitMinutes)}.`,
+      push,
+    });
     push('Meeting requested. You are in the queue.', 'success');
     setShowForm(false); setTopic(''); setPurpose(''); setDuration('15');
     refresh();
   };
 
   const requestDelay = async () => {
-    const cur = await sget(SK.CURRENT, null);
-    if (!cur || cur.userId !== user.id) return;
-    // mark delayed: set delayUntil 30 mins from now, push back into queue per rule
     const delayUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const delayedEntry = { ...cur, delayed: true, delayUntil };
-    const q = await sget(SK.QUEUE, []);
     const delayedHistory = await sget(SK.DELAYED, []);
-    // Insert position rule: latest position among already-delayed in queue, but earliest non-delayed (besides 1)
-    const newQueue = insertDelayed(q, delayedEntry);
-    await sset(SK.QUEUE, newQueue);
-    await sset(SK.DELAYED, [...delayedHistory, cur.userId]);
-    await sset(SK.CURRENT, null);
-    push('Meeting delayed by 30 minutes. You have been requeued.', 'success');
+
+    if (myCurrent) {
+      const cur = await sget(SK.CURRENT, null);
+      if (!cur || cur.userId !== user.id) return;
+      const delayedEntry = { ...cur, delayed: true, delayUntil };
+      const q = await sget(SK.QUEUE, []);
+      const newQueue = insertDelayed(q, delayedEntry);
+      await sset(SK.QUEUE, newQueue);
+      await sset(SK.DELAYED, [...delayedHistory, cur.userId]);
+      await sset(SK.CURRENT, null);
+      push('Meeting delayed by 30 minutes. You have been requeued.', 'success');
+      refresh();
+      return;
+    }
+
+    if (isFirstInLine && myEntry) {
+      const q = await sget(SK.QUEUE, []);
+      const remaining = q.filter(x => x.id !== myEntry.id);
+      const delayedEntry = { ...myEntry, delayed: true, delayUntil };
+      const newQueue = insertDelayed(remaining, delayedEntry);
+      await sset(SK.QUEUE, newQueue);
+      await sset(SK.DELAYED, [...delayedHistory, myEntry.userId]);
+      push('Your turn has been delayed by 30 minutes.', 'success');
+      refresh();
+    }
+  };
+
+  const joinMeetingNow = async () => {
+    if (!isFirstInLine || !myEntry) return;
+    const q = await sget(SK.QUEUE, []);
+    if (!q.length || q[0].id !== myEntry.id) return push('You are no longer first in queue.', 'error');
+    await sset(SK.QUEUE, q.slice(1));
+    await sset(SK.CURRENT, { ...myEntry, calledAt: new Date().toISOString() });
+    push('You have joined the meeting.', 'success');
     refresh();
   };
 
@@ -677,7 +766,7 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
           <div style={{ fontSize: '0.75rem', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 16 }}>
             Your Position in the Queue
           </div>
-          <div className="mq-display" style={{ fontSize: '6rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
+          <div className="mq-mono" style={{ fontSize: '5rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
             {myPosition}
           </div>
           <div style={{ color: 'var(--text-secondary)', marginTop: 12, fontStyle: 'italic', fontFamily: 'Cormorant Garamond, serif', fontSize: '1.1rem' }}>
@@ -713,6 +802,23 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
               <Plus size={14} /> Request Audience
             </button>
           )}
+        </div>
+      )}
+
+      {isFirstInLine && (
+        <div className="mq-card" style={{ padding: '1.5rem', marginTop: 20, textAlign: 'center' }}>
+          <div style={{ fontWeight: 600, color: 'var(--ivory)', marginBottom: 8 }}>You are first in line</div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 14 }}>
+            No meeting is active. You can join now or delay your turn.
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button className="mq-btn mq-btn-gold" onClick={joinMeetingNow}>
+              <Play size={14} /> Join Meeting
+            </button>
+            <button className="mq-btn mq-btn-ghost" onClick={requestDelay}>
+              <Clock size={14} /> Delay 30 Minutes
+            </button>
+          </div>
         </div>
       )}
 
@@ -788,6 +894,12 @@ function AdminView({ user, push, refresh, queue, current, moratorium, history, a
     const next = q.shift();
     await sset(SK.QUEUE, q);
     await sset(SK.CURRENT, { ...next, calledAt: new Date().toISOString() });
+    await sendEmail({
+      to: next.email,
+      subject: 'It is your turn now',
+      body: `Hello ${next.userName}, you are now called in for your meeting with the President.`,
+      push,
+    });
     push(`${next.userName} has been summoned. Email notification sent.`, 'success');
     refresh();
   };
@@ -1372,6 +1484,29 @@ export default function App() {
     })();
   }, [tick, user]);
 
+  useEffect(() => {
+    const onStorage = () => refresh();
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      if (current || queue.length === 0) return;
+      const first = queue[0];
+      if (!first?.userId) return;
+      const lastNotified = await sget(SK.NEXT_ALERTED, null);
+      if (lastNotified === first.userId) return;
+      await sendEmail({
+        to: first.email,
+        subject: 'You are next in line',
+        body: `Hello ${first.userName}, you are now next in the queue and should be ready to join.`,
+        push: null,
+      });
+      await sset(SK.NEXT_ALERTED, first.userId);
+    })();
+  }, [queue, current]);
+
   // Auto-poll for delay reactivation: when delayUntil passes, no special action needed
   // because the entry is already in queue at correct position. The "delayed" flag
   // remains for visual indicator. Real system would email at delayUntil.
@@ -1399,7 +1534,7 @@ export default function App() {
       <style>{styles}</style>
       <ToastStack toasts={toasts} />
       {!user ? (
-        <AuthScreen onLogin={(u) => { setUser(u); refresh(); }} push={push} />
+        <AuthScreen onLogin={(u) => { setUser(u); refresh(); }} push={push} onUsersChanged={refresh} />
       ) : (
         <>
           <TopNav user={user} onLogout={handleLogout} />
