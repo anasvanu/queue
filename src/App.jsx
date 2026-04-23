@@ -81,12 +81,12 @@ const seedIfEmpty = async () => {
   const users = await sget(SK.USERS, null);
   if (!users) {
     await sset(SK.USERS, [
-      { id: 'admin', email: 'admin@powermech.net', password: 'Admin@P0wer', name: 'Executive Assistant', role: 'EA', verified: true },
-      { id: 'pres', email: 'president@powermech.net', password: 'Pres@P0wer', name: 'The President', role: 'PRESIDENT', verified: true },
+      { id: 'admin', email: 'admin@queue.local', password: 'ChangeMeAdmin123!', name: 'Executive Assistant', role: 'EA', verified: true },
+      { id: 'pres', email: 'president@queue.local', password: 'ChangeMePres123!', name: 'The President', role: 'PRESIDENT', verified: true },
     ]);
   }
   const domains = await sget(SK.DOMAINS, null);
-  if (!domains) await sset(SK.DOMAINS, ['powermech.net']);
+  if (!domains) await sset(SK.DOMAINS, ['queue.local']);
   if ((await sget(SK.QUEUE, null)) === null) await sset(SK.QUEUE, []);
   if ((await sget(SK.HISTORY, null)) === null) await sset(SK.HISTORY, []);
   if ((await sget(SK.DELAYED, null)) === null) await sset(SK.DELAYED, []);
@@ -541,7 +541,7 @@ function AuthScreen({ onLogin, push, onUsersChanged }) {
             </p>
             <div style={{ marginBottom: 16 }}>
               <label className="mq-label">Email Address</label>
-              <input className="mq-input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@powermech.net" />
+              <input className="mq-input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@queue.local" />
             </div>
             <div style={{ marginBottom: 24 }}>
               <label className="mq-label">Password</label>
@@ -569,7 +569,7 @@ function AuthScreen({ onLogin, push, onUsersChanged }) {
             </div>
             <div style={{ marginBottom: 14 }}>
               <label className="mq-label">Company Email</label>
-              <input className="mq-input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@powermech.net" />
+              <input className="mq-input" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jane@queue.local" />
             </div>
             <div style={{ marginBottom: 24 }}>
               <label className="mq-label">Choose Password</label>
