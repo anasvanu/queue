@@ -1286,7 +1286,6 @@ function QueueTab({ queue, current, moratorium, callNext, completeMeeting, push,
           </div>
         </div>
       )}
-      </div>
     </div>
   );
 }
