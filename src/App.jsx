@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Crown, Mail, Lock, KeyRound, LogOut, Users, Clock, CheckCircle2, Pause, Play, Calendar, Download, GripVertical, Plus, AlertCircle, Settings, ChevronRight, Shield, X, Info, BarChart3, FileDown, Trash2, RefreshCw } from 'lucide-react';
+import emailjs from '@emailjs/browser';
+import { db, doc, onSnapshot, setDoc, getDoc } from './firebase';
 
 // ============ STORAGE HELPERS ============
 const SK = {
@@ -16,8 +18,17 @@ const SK = {
   EMAIL_LOG: 'mq:email_log',
 };
 
+const STATE_DOC = 'queueApp/mainState';
+
 const sget = async (k, def = null) => {
   try {
+    if (db) {
+      const snap = await getDoc(doc(db, STATE_DOC));
+      if (snap.exists() && snap.data()[k] !== undefined) {
+        return snap.data()[k];
+      }
+      return def;
+    }
     if (window?.storage?.get) {
       const r = await window.storage.get(k, true);
       return r ? JSON.parse(r.value) : def;
@@ -28,6 +39,10 @@ const sget = async (k, def = null) => {
 };
 const sset = async (k, v) => {
   try {
+    if (db) {
+      await setDoc(doc(db, STATE_DOC), { [k]: v }, { merge: true });
+      return;
+    }
     if (window?.storage?.set) {
       await window.storage.set(k, JSON.stringify(v), true);
       return;
@@ -58,22 +73,29 @@ const estimateWaitMinutes = (queue, current, targetIndex) => {
 
 const sendEmail = async ({ to, subject, body, push }) => {
   try {
-    if (window?.email?.send) {
-      await window.email.send({ to, subject, body });
+    const serviceId = import.meta.env.VITE_EMAILJS_SERVICE_ID;
+    const templateId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID;
+    const publicKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY;
+    
+    if (serviceId && serviceId !== 'your-emailjs-service-id') {
+      await emailjs.send(serviceId, templateId, {
+        to_email: to,
+        subject: subject,
+        message: body
+      }, { publicKey });
       return true;
+    } else {
+      console.warn("EmailJS is not configured.");
+      if (push) push('EmailJS configuration missing. Email failed.', 'error');
+      return false;
     }
-    if (window?.Email?.send) {
-      await window.Email.send({ to, subject, body });
-      return true;
+  } catch (e) {
+    console.error("EmailJS Error", e);
+    if (push) {
+      push(`EmailJS Error: ${e.text || e.message || 'Check console'}`, 'error');
     }
-  } catch {}
-
-  const outbox = await sget(SK.EMAIL_LOG, []);
-  await sset(SK.EMAIL_LOG, [...outbox, { to, subject, body, createdAt: new Date().toISOString() }]);
-  if (push) {
-    push('Email service not configured in browser. Message captured in local outbox.', 'info');
+    return false;
   }
-  return false;
 };
 
 // ============ SEED DATA ============
@@ -239,7 +261,7 @@ const styles = `
     border: 1px solid var(--gold);
     border-radius: 50%;
     color: var(--gold);
-    font-family: 'Cormorant Garamond', serif;
+    font-family: 'Outfit', sans-serif;
     font-size: 1.25rem; font-weight: 600;
     flex-shrink: 0;
   }
@@ -264,7 +286,7 @@ const styles = `
   .mq-tab:hover { color: var(--text-primary); }
   .mq-tab.active { color: var(--gold); border-bottom-color: var(--gold); }
 
-  .mq-stat-num { font-family: 'Cormorant Garamond', serif; font-size: 2.75rem; font-weight: 600; line-height: 1; color: var(--gold); }
+  .mq-stat-num { font-family: 'Outfit', sans-serif; font-size: 2.75rem; font-weight: 600; line-height: 1; color: var(--gold); }
   .mq-stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-secondary); margin-top: 0.5rem; }
 
   @keyframes mq-fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -353,7 +375,7 @@ const styles = `
     width: 50px; height: 60px;
     text-align: center;
     font-size: 1.5rem;
-    font-family: 'Cormorant Garamond', serif;
+    font-family: 'Outfit', sans-serif;
     font-weight: 600;
     background: var(--bg-deepest);
     border: 1px solid var(--border);
@@ -760,13 +782,13 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
         </div>
       )}
 
-      {!myCurrent && myEntry && (
+      {!myCurrent && myEntry && !isFirstInLine && (
         <div className="mq-card" style={{ padding: '2.5rem', textAlign: 'center', position: 'relative' }}>
           <span className="mq-corner tl" /><span className="mq-corner tr" /><span className="mq-corner bl" /><span className="mq-corner br" />
           <div style={{ fontSize: '0.75rem', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 16 }}>
             Your Position in the Queue
           </div>
-          <div className="mq-mono" style={{ fontSize: '5rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
+          <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '5rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
             {myPosition}
           </div>
           <div style={{ color: 'var(--text-secondary)', marginTop: 12, fontStyle: 'italic', fontFamily: 'Cormorant Garamond, serif', fontSize: '1.1rem' }}>
@@ -806,17 +828,19 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
       )}
 
       {isFirstInLine && (
-        <div className="mq-card" style={{ padding: '1.5rem', marginTop: 20, textAlign: 'center' }}>
-          <div style={{ fontWeight: 600, color: 'var(--ivory)', marginBottom: 8 }}>You are first in line</div>
-          <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: 14 }}>
-            No meeting is active. You can join now or delay your turn.
+        <div className="mq-card mq-pulse" style={{ padding: '2.5rem', textAlign: 'center', borderColor: 'var(--gold)', position: 'relative' }}>
+          <span className="mq-corner tl" /><span className="mq-corner tr" /><span className="mq-corner bl" /><span className="mq-corner br" />
+          <Crown size={40} color="var(--gold)" style={{ marginBottom: 12 }} />
+          <div style={{ fontWeight: 600, color: 'var(--ivory)', fontSize: '1.5rem', marginBottom: 8 }}>You are next in line!</div>
+          <div style={{ color: 'var(--text-secondary)', fontSize: '1rem', marginBottom: 24 }}>
+            No meeting is currently active. The President's office is open.
           </div>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <button className="mq-btn mq-btn-gold" onClick={joinMeetingNow}>
-              <Play size={14} /> Join Meeting
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <button className="mq-btn mq-btn-gold" onClick={joinMeetingNow} style={{ padding: '1rem 2rem', fontSize: '0.9rem' }}>
+              <Play size={16} /> Join Meeting Now
             </button>
-            <button className="mq-btn mq-btn-ghost" onClick={requestDelay}>
-              <Clock size={14} /> Delay 30 Minutes
+            <button className="mq-btn mq-btn-ghost" onClick={requestDelay} style={{ padding: '1rem 2rem', fontSize: '0.9rem' }}>
+              <Clock size={16} /> Schedule for Later
             </button>
           </div>
         </div>
@@ -1310,7 +1334,7 @@ function ReportsTab({ history, push }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {stats.top.map(([name, count], i) => (
                 <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <span className="mq-display" style={{ color: 'var(--gold)', fontSize: '1.3rem', width: 24 }}>{i + 1}</span>
+                  <span style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 600, color: 'var(--gold)', fontSize: '1.3rem', width: 24 }}>{i + 1}</span>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '0.95rem', color: 'var(--ivory)' }}>{name}</div>
                     <div style={{ height: 4, background: 'var(--bg-deepest)', borderRadius: 2, overflow: 'hidden', marginTop: 4 }}>
@@ -1411,7 +1435,7 @@ function SettingsTab({ domains, allUsers, push, refresh }) {
 }
 
 // ============ TOP NAV ============
-function TopNav({ user, onLogout }) {
+function TopNav({ user, onLogout, refresh }) {
   return (
     <nav style={{
       borderBottom: '1px solid var(--border)',
@@ -1437,9 +1461,14 @@ function TopNav({ user, onLogout }) {
           <div style={{ fontSize: '0.9rem', color: 'var(--ivory)' }}>{user.name}</div>
           <div style={{ fontSize: '0.7rem', color: 'var(--gold)', letterSpacing: '0.1em', textTransform: 'uppercase' }}>{user.role}</div>
         </div>
-        <button onClick={onLogout} className="mq-btn mq-btn-ghost" style={{ padding: '0.5rem 0.9rem' }}>
-          <LogOut size={14} />
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={refresh} className="mq-btn mq-btn-ghost" style={{ padding: '0.5rem 0.9rem' }} title="Sync Data">
+            <RefreshCw size={14} />
+          </button>
+          <button onClick={onLogout} className="mq-btn mq-btn-ghost" style={{ padding: '0.5rem 0.9rem' }} title="Sign Out">
+            <LogOut size={14} />
+          </button>
+        </div>
       </div>
     </nav>
   );
@@ -1485,9 +1514,16 @@ export default function App() {
   }, [tick, user]);
 
   useEffect(() => {
-    const onStorage = () => refresh();
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    if (db) {
+      const unsub = onSnapshot(doc(db, 'queueApp/mainState'), (snap) => {
+        if (snap.exists()) refresh();
+      });
+      return () => unsub();
+    } else {
+      const onStorage = () => refresh();
+      window.addEventListener('storage', onStorage);
+      return () => window.removeEventListener('storage', onStorage);
+    }
   }, []);
 
   useEffect(() => {
@@ -1501,7 +1537,7 @@ export default function App() {
         to: first.email,
         subject: 'You are next in line',
         body: `Hello ${first.userName}, you are now next in the queue and should be ready to join.`,
-        push: null,
+        push: push,
       });
       await sset(SK.NEXT_ALERTED, first.userId);
     })();
@@ -1537,7 +1573,7 @@ export default function App() {
         <AuthScreen onLogin={(u) => { setUser(u); refresh(); }} push={push} onUsersChanged={refresh} />
       ) : (
         <>
-          <TopNav user={user} onLogout={handleLogout} />
+          <TopNav user={user} onLogout={handleLogout} refresh={refresh} />
           {(user.role === 'EA' || user.role === 'PRESIDENT') ? (
             <AdminView
               user={user} push={push} refresh={refresh}
