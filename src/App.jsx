@@ -412,6 +412,7 @@ const styles = `
   ::-webkit-scrollbar-track { background: var(--bg-deepest); }
   ::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+  .mq-wheel::-webkit-scrollbar { display: none; }
 `;
 
 // ============ TOAST SYSTEM ============
@@ -439,6 +440,78 @@ const ToastStack = ({ toasts }) => (
     ))}
   </div>
 );
+
+// ============ UI COMPONENTS ============
+function WheelColumn({ items, value, onChange }) {
+  const ref = useRef(null);
+  
+  useEffect(() => {
+    if (ref.current) {
+      const idx = items.indexOf(value);
+      if (idx !== -1) {
+        ref.current.scrollTop = idx * 40;
+      }
+    }
+  }, [value, items]);
+
+  const handleScroll = (e) => {
+    const el = e.target;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => {
+      const idx = Math.round(el.scrollTop / 40);
+      if (items[idx] && items[idx] !== value) onChange(items[idx]);
+    }, 100);
+  };
+
+  return (
+    <div ref={ref} onScroll={handleScroll} className="mq-wheel" style={{ height: 120, overflowY: 'scroll', scrollSnapType: 'y mandatory', scrollbarWidth: 'none', position: 'relative' }}>
+      <div style={{ height: 40 }} />
+      {items.map(it => (
+        <div key={it} style={{ height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', scrollSnapAlign: 'center', fontSize: it === value ? '1.5rem' : '1.1rem', color: it === value ? 'var(--gold)' : 'var(--text-tertiary)', fontWeight: it === value ? 600 : 400, transition: 'all 0.2s', cursor: 'pointer' }} onClick={() => onChange(it)}>
+          {it}
+        </div>
+      ))}
+      <div style={{ height: 40 }} />
+    </div>
+  );
+}
+
+function WheelTimePicker({ value, onChange }) {
+  const defaultVal = value || '12:00';
+  const [h24, m] = defaultVal.split(':');
+  const isPm = parseInt(h24) >= 12;
+  const h12 = (parseInt(h24) % 12) || 12;
+  
+  const hStr = String(h12).padStart(2, '0');
+  const mStr = String(m).padStart(2, '0');
+  const ampm = isPm ? 'PM' : 'AM';
+
+  const hours = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+  const minutes = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+  const periods = ['AM', 'PM'];
+
+  const update = (newH, newM, newP) => {
+    let h = parseInt(newH);
+    if (newP === 'PM' && h < 12) h += 12;
+    if (newP === 'AM' && h === 12) h = 0;
+    onChange(`${String(h).padStart(2, '0')}:${newM}`);
+  };
+
+  useEffect(() => {
+    if (!value) onChange('12:00');
+  }, [value, onChange]);
+
+  return (
+    <div style={{ display: 'flex', gap: 10, background: 'var(--bg-deepest)', border: '1px solid var(--border)', borderRadius: 4, padding: '10px 0', justifyContent: 'center', position: 'relative' }}>
+      <div style={{ position: 'absolute', top: '50%', left: 0, right: 0, height: 40, marginTop: -20, background: 'rgba(212, 175, 55, 0.05)', pointerEvents: 'none', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }} />
+      <WheelColumn items={hours} value={hStr} onChange={v => update(v, mStr, ampm)} />
+      <div style={{ display: 'flex', alignItems: 'center', color: 'var(--gold)', fontWeight: 600, zIndex: 1 }}>:</div>
+      <WheelColumn items={minutes} value={mStr} onChange={v => update(hStr, v, ampm)} />
+      <div style={{ width: 10 }} />
+      <WheelColumn items={periods} value={ampm} onChange={v => update(hStr, mStr, v)} />
+    </div>
+  );
+}
 
 // ============ AUTH SCREENS ============
 const Brand = ({ size = 'lg' }) => (
@@ -666,9 +739,19 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
 
   const myCurrent = current && current.userId === user.id;
   const myEntry = queue.find(q => q.userId === user.id);
-  const myPosition = myEntry ? queue.indexOf(myEntry) + 1 : null;
+  const activeQueue = queue.filter(q => !q.delayed || Date.now() >= new Date(q.delayUntil).getTime());
+  
+  let myPosition = null;
+  if (myEntry) {
+    if (myEntry.delayed && Date.now() < new Date(myEntry.delayUntil).getTime()) {
+      myPosition = 'Delayed';
+    } else {
+      myPosition = activeQueue.indexOf(myEntry) + 1;
+    }
+  }
+
   const inSomeForm = myCurrent || myEntry;
-  const isFirstInLine = !current && myEntry && myPosition === 1 && !moratorium?.active;
+  const isFirstInLine = !current && myPosition === 1 && !moratorium?.active;
 
   const submitRequest = async () => {
     if (!topic.trim() || !purpose.trim()) return push('All fields required.', 'error');
@@ -792,14 +875,16 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
         <div className="mq-card" style={{ padding: '2.5rem', textAlign: 'center', position: 'relative' }}>
           <span className="mq-corner tl" /><span className="mq-corner tr" /><span className="mq-corner bl" /><span className="mq-corner br" />
           <div style={{ fontSize: '0.75rem', letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-secondary)', marginBottom: 16 }}>
-            Your Position in the Queue
+            {myPosition === 'Delayed' ? 'Status' : 'Your Position in the Queue'}
           </div>
-          <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: '5rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
+          <div style={{ fontFamily: 'Outfit, sans-serif', fontSize: myPosition === 'Delayed' ? '3rem' : '5rem', color: 'var(--gold)', lineHeight: 1, fontWeight: 600 }}>
             {myPosition}
           </div>
-          <div style={{ color: 'var(--text-secondary)', marginTop: 12, fontStyle: 'italic', fontFamily: 'Cormorant Garamond, serif', fontSize: '1.1rem' }}>
-            of {queue.length} awaiting audience
-          </div>
+          {myPosition !== 'Delayed' && (
+            <div style={{ color: 'var(--text-secondary)', marginTop: 12, fontStyle: 'italic', fontFamily: 'Cormorant Garamond, serif', fontSize: '1.1rem' }}>
+              of {activeQueue.length} awaiting audience
+            </div>
+          )}
           <div className="mq-divider-ornament" style={{ maxWidth: 200, margin: '24px auto' }}>◆</div>
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: 360, margin: '0 auto', lineHeight: 1.6 }}>
             You will receive an email notification when you are next in line. Please remain ready.
@@ -896,8 +981,10 @@ function EmployeeView({ user, push, refresh, queue, current, moratorium }) {
               <h2 className="mq-display" style={{ fontSize: '1.4rem', margin: 0, color: 'var(--ivory)' }}>Schedule for Later</h2>
             </div>
             <div style={{ padding: '1.5rem' }}>
-              <label className="mq-label">Select Time</label>
-              <input type="time" className="mq-input" value={delayTime} onChange={e => setDelayTime(e.target.value)} style={{ fontSize: '1.2rem', marginBottom: 20 }} />
+              <label className="mq-label" style={{ textAlign: 'center', marginBottom: 12 }}>Select Time</label>
+              <div style={{ marginBottom: 24 }}>
+                <WheelTimePicker value={delayTime} onChange={setDelayTime} />
+              </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button className="mq-btn mq-btn-ghost" onClick={() => setShowDelayPicker(false)}>Cancel</button>
                 <button className="mq-btn mq-btn-gold" onClick={requestDelay}>Confirm Delay</button>
@@ -1276,8 +1363,10 @@ function QueueTab({ queue, current, moratorium, callNext, completeMeeting, push,
               <h2 className="mq-display" style={{ fontSize: '1.4rem', margin: 0, color: 'var(--ivory)' }}>Reschedule User</h2>
             </div>
             <div style={{ padding: '1.5rem' }}>
-              <label className="mq-label">Select Time</label>
-              <input type="time" className="mq-input" value={adminDelayTime} onChange={e => setAdminDelayTime(e.target.value)} style={{ fontSize: '1.2rem', marginBottom: 20 }} />
+              <label className="mq-label" style={{ textAlign: 'center', marginBottom: 12 }}>Select Time</label>
+              <div style={{ marginBottom: 24 }}>
+                <WheelTimePicker value={adminDelayTime} onChange={setAdminDelayTime} />
+              </div>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button className="mq-btn mq-btn-ghost" onClick={() => setAdminDelayTarget(null)}>Cancel</button>
                 <button className="mq-btn mq-btn-gold" onClick={adminRequestDelay}>Confirm</button>
